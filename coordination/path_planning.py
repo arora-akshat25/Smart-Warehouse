@@ -7,7 +7,6 @@ class AStarPlanner:
 
         self.rows = rows
         self.cols = cols
-
         self.obstacles = set(obstacles)
 
     def heuristic(self, a, b):
@@ -47,24 +46,16 @@ class AStarPlanner:
         start = tuple(start)
         goal = tuple(goal)
 
-        if reserved_cells is None:
-            reserved_cells = set()
+        reserved_cells = reserved_cells or set()
 
         if start in self.obstacles or goal in self.obstacles:
             return []
 
-        open_list = []
-
-        heapq.heappush(
-            open_list,
-            (0, start)
-        )
+        open_list = [(0, start)]
 
         came_from = {}
 
-        g_score = {
-            start: 0
-        }
+        g_score = {start: 0}
 
         while open_list:
 
@@ -77,25 +68,15 @@ class AStarPlanner:
                 while current in came_from:
 
                     current = came_from[current]
-
                     path.append(current)
 
                 return path[::-1]
 
             for neighbor in self.get_neighbors(current):
 
-                # Prefer routes not already allocated
-                route_penalty = 0
+                penalty = 10 if neighbor in reserved_cells else 0
 
-                if neighbor in reserved_cells:
-
-                    route_penalty = 8
-
-                tentative_g = (
-                    g_score[current]
-                    + 1
-                    + route_penalty
-                )
+                tentative_g = g_score[current] + 1 + penalty
 
                 if tentative_g < g_score.get(
                     neighbor, float("inf")

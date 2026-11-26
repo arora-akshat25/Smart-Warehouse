@@ -1,8 +1,10 @@
 import pygame
+import math
 from datetime import datetime
 
 from simulation.robot import Robot
-
+from coordination.path_planning import AStarPlanner
+from coordination.traffic_negotiator import TrafficNegotiator
 
 class Warehouse:
 
@@ -148,16 +150,153 @@ class Warehouse:
 
         ]
 
-        # TEMPORARY DEMONSTRATION PATHS
-        for robot in self.robots:
+        # ==========================================
+        # A* COORDINATED PATH PLANNING
+        # ==========================================
 
-            row = int(robot.y)
+        # 1. Identify warehouse rack obstacles
 
-            robot.set_path([
-                (x, row)
-                for x in range(2, 27)
-            ])
+        obstacles = set()
 
+        for x, y, w, h in self.racks:
+
+            for dx in range(w):
+
+                for dy in range(h):
+
+                    obstacles.add((x + dx, y + dy))
+
+
+        # 2. Initialize A* planner
+
+        self.path_planner = AStarPlanner(
+            self.rows,
+            self.cols,
+            obstacles
+        )
+
+
+        # 3. Assign different destinations
+
+        robot_destinations = [
+
+            (26, 5),
+            (26, 7),
+            (26, 11),
+            (26, 13),
+            (26, 17)
+
+        ]
+
+
+        # 4. Coordinate route allocation
+
+        # ==========================================
+        # DISTRIBUTED TASK NEGOTIATION
+        # ==========================================
+
+        from coordination.distributed_coordinator import (
+            DistributedCoordinator
+        )
+
+        # Create warehouse tasks.
+        warehouse_tasks = [
+
+            {
+                "task_id": "TASK-01",
+                "destination": (26, 5)
+            },
+
+            {
+                "task_id": "TASK-02",
+                "destination": (26, 7)
+            },
+
+            {
+                "task_id": "TASK-03",
+                "destination": (26, 11)
+            },
+
+            {
+                "task_id": "TASK-04",
+                "destination": (26, 13)
+            },
+
+            {
+                "task_id": "TASK-05",
+                "destination": (26, 17)
+            }
+
+        ]
+
+        # Initialize distributed coordination.
+        self.coordinator = DistributedCoordinator(
+            self.robots,
+            self.path_planner
+        )
+        
+        # Initialize distributed traffic negotiation.
+        self.traffic_negotiator = TrafficNegotiator(
+            self.coordinator.network
+        )
+        
+        
+
+        # Let robots negotiate tasks.
+        assignments = self.coordinator.negotiate_tasks(
+            warehouse_tasks
+        )
+
+        # Apply negotiated assignments.
+        for task in warehouse_tasks:
+
+            task_id = task["task_id"]
+
+            if task_id not in assignments:
+                continue
+
+            robot_id = assignments[task_id]
+
+            robot = next(
+                r for r in self.robots
+                if r.robot_id == robot_id
+            )
+
+            destination = task["destination"]
+
+            start = (
+                round(robot.x),
+                round(robot.y)
+            )
+
+            path = self.path_planner.find_path(
+                start,
+                destination
+            )
+
+            if path:
+
+                robot.set_path(path)
+
+                robot.current_task = task_id
+
+                robot.destination = destination
+
+                print(
+                    f"{robot.robot_id} assigned "
+                    f"{task_id} | "
+                    f"Destination: {destination}"
+                )
+
+        # Print negotiation activity.
+        for activity in self.coordinator.activity_log:
+
+            print("[COORDINATION]", activity)
+
+        print(
+            "Messages exchanged:",
+            self.coordinator.network.messages_sent
+        )
     # ==========================================
     # TEXT DRAWING
     # ==========================================
@@ -436,17 +575,152 @@ class Warehouse:
             self.YELLOW,
             "CHARGING"
         )
+    # ==========================================
+    # ROBOT MOVEMENT AND COLLISION AVOIDANCE
+    # ==========================================
 
-    # ==========================================
-    # ROBOT MOVEMENT
-    # ==========================================
+    def predict_next_position(self, robot, dt):
+
+        # No movement if the robot has no path
+        if not robot.path:
+            return robot.x, robot.y
+
+        if robot.target_index >= len(robot.path):
+            return robot.x, robot.y
+
+        target_x, target_y = robot.path[robot.target_index]
+
+        dx = target_x - robot.x
+        dy = target_y - robot.y
+
+        distance = math.sqrt(dx ** 2 + dy ** 2)
+
+        if distance < 0.08:
+            return robot.x, robot.y
+
+        movement = min(robot.speed * dt, distance)
+
+        next_x = robot.x + (dx / distance) * movement
+        next_y = robot.y + (dy / distance) * movement
+
+        return next_x, next_y
 
     def update_robots(self, dt):
 
+        # -----------------------------------
+        # PHASE 1: PREDICT ROBOT MOVEMENTS
+        # -----------------------------------
+
+        predicted_positions = {}
+
         for robot in self.robots:
 
-            robot.update(dt)
+            predicted_positions[robot.robot_id] = (
+                self.predict_next_position(robot, dt)
+            )
 
+        # -----------------------------------
+        # PHASE 2: NEGOTIATE TRAFFIC
+        # -----------------------------------
+
+        allowed = self.traffic_negotiator.resolve(
+            self.robots,
+            predicted_positions,
+            dt
+        )
+
+        # Attempt recovery for robots waiting too long.
+        self.traffic_negotiator.recover_stalled_robots(
+            self.robots,
+            self.path_planner,
+            dt
+        )
+
+        # -----------------------------------
+        # PHASE 3: EXECUTE APPROVED MOVEMENTS
+        # -----------------------------------
+
+        for robot in self.robots:
+
+            can_move = allowed[robot.robot_id]
+
+            robot.update(
+                dt,
+                allow_move=can_move
+            )
+
+            if can_move:
+                robot.status = "MOVING"
+            else:
+                robot.status = "WAITING"
+                
+        # -----------------------------------
+        # TRAFFIC MONITORING
+        # -----------------------------------
+
+        self.traffic_update_timer = getattr(
+            self, "traffic_update_timer", 0
+        )
+
+        self.traffic_update_timer += dt
+
+        if self.traffic_update_timer >= 2:
+
+            self.traffic_update_timer = 0
+
+            waiting = sum(
+                1 for robot in self.robots
+                if robot.status == "WAITING"
+            )
+
+            print("\n========== TRAFFIC REPORT ==========")
+
+            print(
+                "Total conflict episodes:",
+                self.traffic_negotiator.total_conflict_episodes
+            )
+
+            print(
+                "Resolved conflict episodes:",
+                self.traffic_negotiator.total_resolved_episodes
+            )
+
+            print(
+                "Currently active conflicts:",
+                len(self.traffic_negotiator.active_conflicts)
+            )
+
+            print(
+                "Communication failures:",
+                self.traffic_negotiator.communication_failures
+            )
+
+            waiting_robots = [
+                robot.robot_id
+                for robot in self.robots
+                if robot.status == "WAITING"
+            ]
+
+            print("Waiting robots:", waiting_robots)
+            
+            print(
+                "Deadlocks detected:",
+                self.traffic_negotiator.deadlocks_detected
+            )
+
+            print(
+                "Recovery attempts:",
+                self.traffic_negotiator.recovery_attempts
+            )
+
+            print(
+                "Successful recoveries:",
+                self.traffic_negotiator.successful_recoveries
+            )
+
+            print("====================================")
+                    
+                    
     # ==========================================
     # ROBOT DISPLAY
     # ==========================================
@@ -489,7 +763,11 @@ class Warehouse:
             ("TOTAL ROBOTS", len(self.robots), self.BLUE),
             ("ACTIVE ROBOTS", active, self.GREEN),
             ("PENDING TASKS", 0, self.YELLOW),
-            ("ALERTS", 0, self.RED)
+            (
+                "CONFLICTS",
+                self.traffic_negotiator.conflicts_detected,
+                self.RED
+            )
         ]
 
         for i, (label, value, color) in enumerate(stats):
@@ -528,11 +806,14 @@ class Warehouse:
                 py
             )
 
-            color = (
-                self.BLUE
-                if robot.status == "MOVING"
-                else self.GREEN
-            )
+            if robot.status == "MOVING":
+                color = self.BLUE
+
+            elif robot.status == "WAITING":
+                color = self.YELLOW
+
+            else:
+                color = self.GREEN
 
             self.draw_text(
                 robot.status,

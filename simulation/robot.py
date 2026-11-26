@@ -36,22 +36,34 @@ class Robot:
         self.radius = 11
 
         self.completed_tasks = 0
+        
+        self.previous_distance = None
+        self.stuck_time = 0
+
+        self.recovery_count = 0
+        self.last_progress_time = 0
 
     def set_path(self, path):
 
         self.path = path
 
         self.target_index = 0
+    def update(self, dt, allow_move=True):
 
-    def update(self, dt):
+        # Stop movement when collision is predicted
+        if not allow_move:
+            return
 
         if not self.path:
             return
 
         if self.target_index >= len(self.path):
+
             self.path.reverse()
             self.target_index = 0
+
             self.completed_tasks += 1
+
             return
 
         target_x, target_y = self.path[self.target_index]
@@ -64,7 +76,6 @@ class Robot:
         if distance < 0.08:
 
             self.target_index += 1
-
             return
 
         self.direction = math.atan2(dy, dx)
@@ -82,7 +93,6 @@ class Robot:
         self.trail.append((self.x, self.y))
 
         if len(self.trail) > 80:
-
             self.trail.pop(0)
 
     def draw(self, screen, map_x, map_y, cell_size):
@@ -168,3 +178,39 @@ class Robot:
             label,
             (pixel_x - 23, pixel_y - 28)
         )
+            
+    def get_distance_to_destination(self):
+
+        if self.destination is None:
+            return 0
+
+        dx = self.destination[0] - self.x
+        dy = self.destination[1] - self.y
+
+        return math.sqrt(dx ** 2 + dy ** 2)
+
+
+    def monitor_progress(self, dt):
+
+        if self.destination is None:
+            self.stuck_time = 0
+            return False
+
+        current_distance = self.get_distance_to_destination()
+
+        if self.previous_distance is None:
+
+            self.previous_distance = current_distance
+            return False
+
+        if current_distance < self.previous_distance - 0.01:
+
+            self.stuck_time = 0
+
+            self.previous_distance = current_distance
+
+            return False
+
+        self.stuck_time += dt
+
+        return self.stuck_time >= 3.0
